@@ -232,7 +232,7 @@ if uploaded_file is not None:
 
                     # Call Gemini using standard Part.from_bytes
                     response = client.models.generate_content(
-                        model='gemini-1.5-pro',
+                        model='gemini-2.5-flash',
                         contents=[
                             types.Part.from_bytes(
                                 data=pdf_bytes,
