@@ -2,7 +2,8 @@ import io
 import json
 import openpyxl
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -15,7 +16,6 @@ st.title("📊 PDF Invoice to Formatted Excel Converter")
 st.write("Upload a PDF invoice to automatically extract line items and download a styled Excel file.")
 
 # --- API KEY CHECK ---
-# Checks Streamlit Secrets first, then falls back to user input if not configured
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", None)
 
 if not gemini_api_key:
@@ -24,12 +24,12 @@ if not gemini_api_key:
         gemini_api_key = st.text_input("Enter Gemini API Key", type="password")
         st.markdown("[Get a Gemini API Key](https://aistudio.google.com/app/apikey)")
 
-# --- PYDANTIC SCHEMAS FOR STRUCTURED GEMINI EXTRACTION ---
+# --- PYDANTIC SCHEMAS ---
 class InvoiceItem(BaseModel):
     item_no: Optional[int] = Field(description="Item or line number")
     material_no: Optional[str] = Field(description="Material/Part/SKU number")
-    description: str = Field(description="Description of the product or service")
-    qty: float = Field(description="Quantity ordered/shipped")
+    description: str = Field(description="Description of product or service")
+    qty: float = Field(description="Quantity ordered or shipped")
     unit_price: float = Field(description="Unit price per item")
     origin: Optional[str] = Field(description="Country of origin")
     batch: Optional[str] = Field(description="Batch number or Serial Number")
@@ -44,7 +44,7 @@ class InvoiceData(BaseModel):
     customer: Optional[str] = Field(description="Customer name / Bill To")
     address: Optional[str] = Field(description="Billing address")
     country: Optional[str] = Field(description="Customer country")
-    ship_to: Optional[str] = Field(description="Ship To name/location")
+    ship_to: Optional[str] = Field(description="Ship To location")
     po_number: Optional[str] = Field(description="Purchase Order number")
     order_number: Optional[str] = Field(description="Sales Order number and date")
     contract_mark: Optional[str] = Field(description="Contract number or Mark reference")
@@ -59,7 +59,6 @@ def create_excel_workbook(data: dict) -> bytes:
     ws.title = "Invoice Details"
     ws.views.sheetView[0].showGridLines = True
 
-    # Styling definitions
     font_fam = "Segoe UI"
     header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
     header_font = Font(name=font_fam, size=11, bold=True, color="FFFFFF")
@@ -107,7 +106,6 @@ def create_excel_workbook(data: dict) -> bytes:
         ws.cell(row=r, column=5, value=str(val2 or "")).font = data_font
         r += 1
 
-    # Table Header
     headers = [
         "Item", "Material No.", "Description", "Quantity", 
         f"Unit Price ({data.get('currency', 'USD')})", 
@@ -124,7 +122,6 @@ def create_excel_workbook(data: dict) -> bytes:
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center" if col_idx != 3 else "left", vertical="center", wrap_text=True)
 
-    # Populate Line Items
     curr_r = start_row_items + 1
     items = data.get("items", [])
     
@@ -141,7 +138,6 @@ def create_excel_workbook(data: dict) -> bytes:
         c_uprice.number_format = '$#,##0.00'
         c_uprice.alignment = Alignment(horizontal="right")
         
-        # Formula for Net Price
         c_net = ws.cell(row=curr_r, column=6, value=f"=D{curr_r}*E{curr_r}")
         c_net.number_format = '$#,##0.00'
         c_net.alignment = Alignment(horizontal="right")
@@ -150,7 +146,6 @@ def create_excel_workbook(data: dict) -> bytes:
         ws.cell(row=curr_r, column=8, value=str(item.get("batch") or "")).alignment = Alignment(horizontal="center")
         ws.cell(row=curr_r, column=9, value=str(item.get("expiry") or "")).alignment = Alignment(horizontal="center")
         
-        # Formatting borders and fills
         for c in range(1, 10):
             cell = ws.cell(row=curr_r, column=c)
             cell.font = data_font
@@ -161,10 +156,7 @@ def create_excel_workbook(data: dict) -> bytes:
         ws.row_dimensions[curr_r].height = 20
         curr_r += 1
 
-    # Financial Breakdown / Totals Section
     curr_r += 1
-    
-    # FOB Subtotal Formula
     ws.cell(row=curr_r, column=5, value="FOB Subtotal:").font = bold_data_font
     ws.cell(row=curr_r, column=5).alignment = Alignment(horizontal="right")
     c_fob = ws.cell(row=curr_r, column=6, value=f"=SUM(F{start_row_items+1}:F{curr_r-2})")
@@ -174,7 +166,6 @@ def create_excel_workbook(data: dict) -> bytes:
     c_fob.border = Border(top=Side(border_style="thin", color="000000"))
     curr_r += 1
 
-    # Freight
     ws.cell(row=curr_r, column=5, value="Freight (Flete):").font = data_font
     ws.cell(row=curr_r, column=5).alignment = Alignment(horizontal="right")
     c_freight = ws.cell(row=curr_r, column=6, value=data.get("freight", 0.0))
@@ -183,7 +174,6 @@ def create_excel_workbook(data: dict) -> bytes:
     c_freight.alignment = Alignment(horizontal="right")
     curr_r += 1
 
-    # Insurance
     ws.cell(row=curr_r, column=5, value="Insurance (Seguro):").font = data_font
     ws.cell(row=curr_r, column=5).alignment = Alignment(horizontal="right")
     c_ins = ws.cell(row=curr_r, column=6, value=data.get("insurance", 0.0))
@@ -192,7 +182,6 @@ def create_excel_workbook(data: dict) -> bytes:
     c_ins.alignment = Alignment(horizontal="right")
     curr_r += 1
 
-    # Total CIP Formula
     ws.cell(row=curr_r, column=5, value="Total CIP:").font = bold_data_font
     ws.cell(row=curr_r, column=5).alignment = Alignment(horizontal="right")
     c_cip = ws.cell(row=curr_r, column=6, value=f"=F{curr_r-3}+F{curr_r-2}+F{curr_r-1}")
@@ -202,7 +191,6 @@ def create_excel_workbook(data: dict) -> bytes:
     c_cip.border = top_thin_bottom_double
     ws.cell(row=curr_r, column=5).border = top_thin_bottom_double
 
-    # Auto-fit Column Widths
     for col in ws.columns:
         max_len = 0
         col_letter = get_column_letter(col[0].column)
@@ -224,60 +212,47 @@ def create_excel_workbook(data: dict) -> bytes:
     wb.save(output)
     return output.getvalue()
 
-# --- MAIN UPLOAD & CONVERSION WORKFLOW ---
+# --- WORKFLOW ---
 uploaded_file = st.file_uploader("Upload Invoice PDF", type=["pdf"])
 
 if uploaded_file is not None:
-    if not gemini_api_key:
-        st.error("Please enter your Gemini API Key in the sidebar (or configure GEMINI_API_KEY in Secrets) to proceed.")
+    # Ensure key string is stripped of whitespace or quotes
+    clean_key = gemini_api_key.strip().strip('"').strip("'") if gemini_api_key else ""
+    
+    if not clean_key:
+        st.error("Please provide a valid Gemini API Key in the sidebar or Secrets.")
     else:
         if st.button("🚀 Process Invoice & Generate Excel", type="primary"):
-            with st.spinner("Analyzing PDF with Gemini 1.5 Pro and compiling Excel..."):
+            with st.spinner("Analyzing PDF with Gemini 1.5 Pro..."):
                 try:
-                    # 1. Configure Gemini
-                    genai.configure(api_key=gemini_api_key)
+                    # Initialize Google GenAI Client
+                    client = genai.Client(api_key=clean_key)
                     
-                    # 2. Upload file bytes temporarily to Gemini API
                     pdf_bytes = uploaded_file.read()
-                    temp_file = genai.upload_file(
-                        io.BytesIO(pdf_bytes),
-                        mime_type="application/pdf",
-                        display_name=uploaded_file.name
+
+                    # Call Gemini using standard Part.from_bytes
+                    response = client.models.generate_content(
+                        model='gemini-1.5-pro',
+                        contents=[
+                            types.Part.from_bytes(
+                                data=pdf_bytes,
+                                mime_type='application/pdf',
+                            ),
+                            "Analyze this invoice document carefully. Extract all header fields, "
+                            "line items (including material numbers, batch numbers, origin, and expiry dates), "
+                            "and financial totals (Freight, Insurance). Return exact structured JSON."
+                        ],
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            response_schema=InvoiceData,
+                            temperature=0.0
+                        )
                     )
 
-                    # 3. Call Gemini 1.5 Pro with Structured Schema Enforcement
-                    model = genai.GenerativeModel("gemini-1.5-pro-latest")
-                    prompt = (
-                        "Analyze this invoice document carefully. Extract all header fields, "
-                        "line items (including material numbers, batch numbers, origin, and expiry dates), "
-                        "and financial totals (Freight, Insurance). Return exact structured JSON."
-                    )
-                    
-                    response = model.generate_content(
-                        [temp_file, prompt],
-                        generation_config={
-                            "response_mime_type": "application/json",
-                            "response_schema": InvoiceData,
-                            "temperature": 0.0
-                        }
-                    )
-
-                    # 4. Parse extracted JSON data
                     extracted_data = json.loads(response.text)
-
-                    # 5. Generate Excel Binary Data
                     excel_data = create_excel_workbook(extracted_data)
 
                     st.success("Extraction Complete!")
-                    
-                    # Preview Extracted Details
-                    st.subheader("Invoice Summary Preview")
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Invoice #", extracted_data.get("invoice_number", "N/A"))
-                    col2.metric("Customer", extracted_data.get("customer", "N/A")[:20] + "...")
-                    col3.metric("Line Items", len(extracted_data.get("items", [])))
-
-                    # Download Button
                     st.download_button(
                         label="📥 Download Formatted Excel Workbook",
                         data=excel_data,
